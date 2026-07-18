@@ -109,11 +109,19 @@ Length: ${length} (~${words} words, ~${mins} min narration)
 Hook: open with a wow question or surprising fact about ${topic}.
 Learning goal: the child remembers 3 simple facts about ${topic}.
 Tone: warm, simple, storytelling — never robotic.`;
-    S.idea.prompt=`You are a children's educational video scriptwriter. Write 3 DISTINCT original narration scripts for kids aged ${age} about "${text||topic}".
-Theme: ${theme}. Length: about ${words} words each.
-Style: heart-warming, storytelling, very simple words a ${age}-year-old can picture; NOT robotic.
-Each script: an intro hook, a body that teaches as a story, a warm outro. Use accurate, kid-safe facts. Include [pause] markers and *emphasis* on key words.
-Label them Option 1 / 2 / 3, each with a one-line style note.`;
+    const sceneCount=length==="short"?"4-5":length==="long"?"10-12":"6-8";
+    S.idea.prompt=`You are a children's educational video scriptwriter. Write an original, heart-warming narration script for kids aged ${age} about "${text||topic}".
+Theme: ${theme}. Total length about ${words} words. Style: warm, enthusiastic, storytelling, very simple words a ${age}-year-old can easily picture — NOT robotic. Use accurate, kid-safe facts.
+Break the story into about ${sceneCount} SCENES. Begin with an exciting hook scene and end with a warm, cheerful goodbye.
+Output EACH scene in EXACTLY this format and nothing else (do not add titles or commentary):
+
+Scene 1
+Narration: <the spoken words only — never say the word "scene"; add [pause] and *emphasis* where helpful>
+Visual: <2-4 word search keyword for free stock footage that matches this line>
+Text: <a short on-screen caption, or leave blank>
+
+Then Scene 2, Scene 3, and so on to the end.
+After the scenes, optionally list 2 alternative opening hooks.`;
     save(); render();
   };
   el("copyPrompt").onclick=()=>{ const t=S.idea.prompt||""; navigator.clipboard?.writeText(t).then(()=>{ const b=el("copyPrompt"); b.textContent="Copied ✓"; setTimeout(()=>{const x=el("copyPrompt");if(x)x.textContent="⧉ Copy prompt";},1200); }).catch(()=>{}); };
@@ -148,9 +156,9 @@ function updateDur(){
 const emptyScene=()=>({narration:"",timing:"5s",overlay:""});
 function stepScenes(){
   return group("Storyboard", `
-    <p class="note">Split your script into short scenes — each becomes one shot with its own footage.</p>
+    <p class="note">Paste an AI script written in <b>Scene / Narration / Visual / Text</b> format (from step 1's prompt) and it imports each scene <b>with its footage keyword</b>. A plain script still splits into meaning-based scenes.</p>
     <div class="row">
-      <button class="btn primary" id="genScenes">✨ Build scenes from script</button>
+      <button class="btn primary" id="genScenes">✨ Import scenes from script</button>
       <button class="btn ghost" id="addScene">+ Add scene</button>
     </div>
     <div id="sceneList"></div>
@@ -162,12 +170,30 @@ function wScenes(){
   renderScenes();
 }
 const estTiming=text=>Math.max(2,Math.round((text.trim().split(/\s+/).filter(Boolean).length)/2.3))+"s";
+const clean=t=>(t||"").replace(/[*_]/g,"").replace(/\s+/g," ").trim();
 function buildScenes(){
-  const text=(S.script.body||"").replace(/\[[^\]]*\]/g," ").replace(/\([^)]*\)/g," ").replace(/[*_]/g,"").replace(/\s+/g," ").trim();
+  const raw=(S.script.body||"");
+  // 1) structured "Scene N / Narration: / Visual: / Text:" format from the AI prompt
+  const blocks=[...raw.matchAll(/scene\s*\d+\b([\s\S]*?)(?=\n\s*scene\s*\d+\b|$)/gi)];
+  const parsed=[];
+  for(const b of blocks){
+    const body=b[1];
+    const visM=body.match(/visual\s*:\s*(.*)/i), txtM=body.match(/text\s*:\s*(.*)/i);
+    const narM=body.match(/narration\s*:\s*([\s\S]*?)(?=\n\s*(?:visual|text)\s*:|$)/i);
+    const nar=clean(narM?narM[1]:body.replace(/^\s*(?:visual|text)\s*:.*$/gim,""));
+    if(!nar) continue;
+    const sc={narration:nar,timing:estTiming(nar),overlay:clean(txtM?txtM[1]:"")};
+    const kw=clean(visM?visM[1]:"").replace(/[.]/g,"");
+    if(kw) sc.asset={kw:kw.slice(0,40)};
+    parsed.push(sc);
+  }
+  if(parsed.length) return parsed;
+  // 2) fallback: plain script → fewer, meaning-based scenes
+  const text=raw.replace(/\[[^\]]*\]/g," ").replace(/\([^)]*\)/g," ").replace(/[*_]/g,"").replace(/\s+/g," ").trim();
   if(!text) return [emptyScene()];
   const sentences=text.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>1);
   if(!sentences.length) return [emptyScene()];
-  const target=S.idea.length==="short"?4:S.idea.length==="long"?9:6;   // fewer, meaning-based scenes
+  const target=S.idea.length==="short"?4:S.idea.length==="long"?9:6;
   const per=Math.max(1,Math.ceil(sentences.length/target));
   const scenes=[];
   for(let i=0;i<sentences.length;i+=per){ const chunk=sentences.slice(i,i+per).join(" "); scenes.push({narration:chunk,timing:estTiming(chunk),overlay:""}); }
@@ -181,6 +207,7 @@ function renderScenes(){
       <h4>Scene ${i+1} <button class="btn ghost sm" data-del="${i}">✕</button></h4>
       ${field("Narration line","scenes."+i+".narration","textarea")}
       <div class="row">
+        ${field("Footage keyword","scenes."+i+".asset.kw","text","e.g. elephant herd")}
         ${field("On-screen text (optional)","scenes."+i+".overlay","text","short caption")}
         ${field("Seconds","scenes."+i+".timing","text","5s")}
       </div>
@@ -329,7 +356,7 @@ function populateVoices(){
   const fill=()=>{ const vs=speechSynthesis.getVoices().filter(v=>/en/i.test(v.lang)); sel.innerHTML=vs.map(v=>`<option value="${esc(v.name)}">${esc(v.name)} (${v.lang})</option>`).join("")||`<option>default</option>`; if(S.narration.voice)sel.value=S.narration.voice; };
   fill(); speechSynthesis.onvoiceschanged=fill;
 }
-function utter(text){ const u=new SpeechSynthesisUtterance((text||"").replace(/\[[^\]]*\]/g," ").replace(/[*_]/g,"")); const v=speechSynthesis.getVoices().find(v=>v.name===S.narration.voice); if(v)u.voice=v; u.rate=0.95; u.pitch=1.05; return u; }
+function utter(text){ const u=new SpeechSynthesisUtterance((text||"").replace(/\[[^\]]*\]/g," ").replace(/\([^)]*\)/g," ").replace(/[*_]/g,"")); const v=speechSynthesis.getVoices().find(v=>v.name===S.narration.voice); if(v)u.voice=v; u.rate=0.95; u.pitch=1.05; return u; }
 function speakScript(){ try{ speechSynthesis.cancel(); speechSynthesis.speak(utter(S.script.body)); }catch(e){} }
 function speakScene(i){ try{ speechSynthesis.cancel(); speechSynthesis.speak(utter(S.scenes[i].narration)); }catch(e){} }
 async function toggleRecord(btn){
@@ -461,7 +488,7 @@ document.addEventListener("input",e=>{ if(e.target.type==="range"){ const b=e.ta
 const HELP=[
   `<h4>Idea</h4><ul><li>One clear topic + who it's for.</li><li>Pick age &amp; theme.</li><li>Build the brief, copy the prompt, ask Claude.</li></ul>`,
   `<h4>Script</h4><ul><li>Paste the script you like from Claude.</li><li>Keep it original &amp; simple.</li><li>Use ✕ Clear to start over.</li></ul>`,
-  `<h4>Storyboard</h4><ul><li>Short scenes = one shot each.</li><li>Trim the narration lines.</li><li>Set seconds per scene.</li></ul>`,
+  `<h4>Storyboard</h4><ul><li>Imports scenes + footage keywords from the AI script.</li><li>Tweak narration, keyword, caption, seconds.</li><li>These drive the Studio footage search.</li></ul>`,
   `<h4>Studio</h4><ul><li>Record your voice.</li><li>Footage per scene: Search / Alternative / Upload.</li><li>Grade &amp; render .webm.</li></ul>`,
   `<h4>Publish</h4><ul><li>Run the checklist.</li><li>Fill metadata.</li><li>One channel, steady pace.</li></ul>`,
 ];
