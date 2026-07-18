@@ -123,22 +123,20 @@ Label them Option 1 / 2 / 3, each with a one-line style note.`;
 function stepScript(){
   return group("Script", `
     ${S.idea.brief?`<div class="ph" style="border-color:var(--acc2);color:var(--mut);background:rgba(0,208,163,.06)"><b>Brief</b><br>${esc(S.idea.brief).replace(/\n/g,"<br>")}</div>`:`<div class="ph">Fill the <b>Idea</b> step first for a brief and a ready-to-paste AI prompt.</div>`}
-    <p class="note">Ask Claude (here in chat) with your step-1 prompt, then paste the script you like below. Or make a quick template draft.</p>
+    <p class="note">Ask Claude (here in chat) with your step-1 prompt, then paste the script you like below.</p>
     <div class="row">
       ${field("Length","idea.length","select",LEN)}
       ${field("Age","idea.age","select",AGE)}
-      <div class="field"><label>&nbsp;</label><button class="btn ghost" id="genTemplates">✨ Template drafts</button></div>
     </div>
-    <div id="scriptOptions"></div>
     <div class="glabel" style="margin-top:14px">Confirmed script <span class="note" id="durOut"></span></div>
     ${field("","script.body","textarea","Paste your chosen script here (intro / body / outro, with [pause] and *emphasis*).")}
+    <div class="row" style="margin-top:8px"><button class="btn ghost sm" id="clearScript">✕ Clear script</button></div>
   `);
 }
 function wScript(){
   updateDur();
-  el("genTemplates").onclick=()=>{ S.script.options=templateScripts({topic:topicWord(),len:S.idea.length,facts:S.idea.brief}); save(); render(); };
   const body=el("panel").querySelector('[data-model="script.body"]'); if(body) body.addEventListener("input",updateDur);
-  renderScriptOptions();
+  const c=el("clearScript"); if(c) c.onclick=()=>{ if(!S.script.body || confirm("Clear the script?")){ S.script.body=""; save(); render(); } };
 }
 function updateDur(){
   const words=(S.script.body||"").trim().split(/\s+/).filter(Boolean).length;
@@ -146,41 +144,6 @@ function updateDur(){
   S.script.dur=sec?`~${Math.floor(sec/60)}m ${sec%60}s (${words} words)`:"";
   const o=el("durOut"); if(o)o.textContent=S.script.dur;
 }
-function renderScriptOptions(){
-  const box=el("scriptOptions"); if(!box)return;
-  const opts=S.script.options||[];
-  if(!opts.length){ box.innerHTML=""; return; }
-  box.innerHTML=`<div class="glabel" style="margin-top:14px">Draft options (${opts.length})</div>`+opts.map((o,i)=>{
-    const used=S.script.body && S.script.body===o.script;
-    return `<div class="item" style="${used?"border-color:var(--acc2)":""}">
-      <div class="ihead"><div class="it">${esc(o.style||("Option "+(i+1)))} ${used?'<span class="pill ok">✓ using</span>':''}</div>
-        <button class="btn ${used?"acc2":"primary"} sm" data-use="${i}">${used?"In use ✓":"✓ Use this"}</button></div>
-      ${o.hook?`<div class="note" style="margin:6px 0"><b>Hook:</b> ${esc(o.hook)}</div>`:""}
-      <textarea readonly style="min-height:140px;font-size:13px">${esc(o.script||"")}</textarea>
-    </div>`;
-  }).join("");
-  box.querySelectorAll("[data-use]").forEach(b=>b.onclick=()=>{ const o=S.script.options[+b.dataset.use]; if(o){ S.script.body=o.script; save(); render(); } });
-}
-function templateScripts({topic,len,facts}){
-  const factLines=(facts||"").split("\n").map(l=>l.replace(/^[-*]\s*/,"").replace(/^[A-Za-z ]+:\s*/,"").trim()).filter(l=>l&&l.length>8);
-  const body=factLines.length?factLines:[`${topic} are amazing`,`where ${topic} live`,`a surprising fact about ${topic}`,`what we learned about ${topic}`];
-  const mk=(style,hook,intro,join,outro)=>({style,hook,script:`[INTRO]\n${intro}\n\n[BODY]\n${body.map(join).join("\n[pause]\n")}\n\n[OUTRO]\n${outro}`});
-  return [
-    mk("Playful Adventure",`An excited wow-question about ${topic}`,
-      `(excited) Hello, little explorers! [pause]\nGet ready for an *amazing* adventure with ${topic}!`,
-      b=>`Wow — ${b}!`,
-      `(cheerful) What an adventure! [pause] Which part was *your* favourite? See you next time! 👋`),
-    mk("Calm Bedtime",`A soft, gentle opening`,
-      `(soft, gentle) Shhh… snuggle in. [pause]\nTonight, a quiet story about ${topic}.`,
-      b=>`Softly now… ${b}.`,
-      `(whisper) And so our gentle story ends. [pause] Sweet dreams, little one. 🌙`),
-    mk("Curious Q&A",`A question that pulls kids in`,
-      `(curious) Have you ever wondered about ${topic}? [pause]\nLet's find out together!`,
-      b=>`Did you know… ${b}? *Yes!*`,
-      `(warm) So many wonderful answers! [pause] What will *you* wonder next? 👋`),
-  ];
-}
-
 /* ===== 3 STORYBOARD ===== */
 const emptyScene=()=>({narration:"",timing:"5s",overlay:""});
 function stepScenes(){
@@ -194,14 +157,21 @@ function stepScenes(){
   `);
 }
 function wScenes(){
-  el("genScenes").onclick=()=>{
-    const lines=(S.script.body||"").split("\n").map(l=>l.trim()).filter(l=>l && !/^\[/.test(l) && !/^\(/.test(l));
-    S.scenes=lines.slice(0,14).map(l=>({narration:l.replace(/[*_]/g,"").trim(),timing:"5s",overlay:""}));
-    if(!S.scenes.length) S.scenes=[emptyScene()];
-    clearMedia(); save(); renderScenes();
-  };
+  el("genScenes").onclick=()=>{ S.scenes=buildScenes(); clearMedia(); save(); renderScenes(); };
   el("addScene").onclick=()=>{ S.scenes.push(emptyScene()); save(); renderScenes(); };
   renderScenes();
+}
+const estTiming=text=>Math.max(2,Math.round((text.trim().split(/\s+/).filter(Boolean).length)/2.3))+"s";
+function buildScenes(){
+  const text=(S.script.body||"").replace(/\[[^\]]*\]/g," ").replace(/\([^)]*\)/g," ").replace(/[*_]/g,"").replace(/\s+/g," ").trim();
+  if(!text) return [emptyScene()];
+  const sentences=text.split(/(?<=[.!?])\s+/).map(s=>s.trim()).filter(s=>s.length>1);
+  if(!sentences.length) return [emptyScene()];
+  const target=S.idea.length==="short"?4:S.idea.length==="long"?9:6;   // fewer, meaning-based scenes
+  const per=Math.max(1,Math.ceil(sentences.length/target));
+  const scenes=[];
+  for(let i=0;i<sentences.length;i+=per){ const chunk=sentences.slice(i,i+per).join(" "); scenes.push({narration:chunk,timing:estTiming(chunk),overlay:""}); }
+  return scenes;
 }
 function renderScenes(){
   const box=el("sceneList"); if(!box)return;
@@ -490,7 +460,7 @@ document.addEventListener("input",e=>{ if(e.target.type==="range"){ const b=e.ta
 /* ---------- helper panels ---------- */
 const HELP=[
   `<h4>Idea</h4><ul><li>One clear topic + who it's for.</li><li>Pick age &amp; theme.</li><li>Build the brief, copy the prompt, ask Claude.</li></ul>`,
-  `<h4>Script</h4><ul><li>Paste the script you like from Claude.</li><li>Keep it original &amp; simple.</li><li>Or use a template draft.</li></ul>`,
+  `<h4>Script</h4><ul><li>Paste the script you like from Claude.</li><li>Keep it original &amp; simple.</li><li>Use ✕ Clear to start over.</li></ul>`,
   `<h4>Storyboard</h4><ul><li>Short scenes = one shot each.</li><li>Trim the narration lines.</li><li>Set seconds per scene.</li></ul>`,
   `<h4>Studio</h4><ul><li>Record your voice.</li><li>Footage per scene: Search / Alternative / Upload.</li><li>Grade &amp; render .webm.</li></ul>`,
   `<h4>Publish</h4><ul><li>Run the checklist.</li><li>Fill metadata.</li><li>One channel, steady pace.</li></ul>`,
