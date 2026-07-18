@@ -227,7 +227,9 @@ const sceneKeyword=i=>{ const sc=S.scenes[i]||{}; return sc.asset?.kw || topicWo
 function clearMedia(){ for(const k in MEDIA) delete MEDIA[k]; }
 
 function stepStudio(){
-  if(!S.scenes.length) return group("Voice & Video Studio",`<div class="empty">No scenes yet. Build them in <b>Storyboard</b> (step 3) first.</div>`);
+  if(!S.scenes.length) return group("Voice & Video Studio",`
+    <div class="row"><button class="btn ghost sm" id="pixKey">${S.studio.pixabayKey?"Pixabay key set ✓":"Add Pixabay key (free footage)"}</button></div>
+    <div class="empty">Add your footage key above anytime. Then build scenes in <b>Storyboard</b> (step 3) to add footage per scene, record your voice, and render.</div>`);
   const c=S.studio.color;
   return group("Voice & Video Studio", `
     <div class="ph" style="border-color:var(--acc2);color:var(--acc2);background:rgba(0,208,163,.08)">✅ Only use footage you're allowed to: your own uploads or free Pixabay clips/photos.</div>
@@ -272,7 +274,8 @@ function stepStudio(){
   `);
 }
 function wStudio(){
-  el("pixKey").onclick=()=>{ const k=prompt("Free Pixabay API key (pixabay.com → sign up → https://pixabay.com/api/docs shows your key). Stored locally only:",S.studio.pixabayKey||""); if(k!=null){ S.studio.pixabayKey=k.trim(); save(); render(); } };
+  const pk=el("pixKey"); if(pk) pk.onclick=()=>{ const k=prompt("Free Pixabay API key (pixabay.com → sign up → https://pixabay.com/api/docs shows your key). Stored locally only:",S.studio.pixabayKey||""); if(k!=null){ S.studio.pixabayKey=k.trim(); save(); render(); } };
+  if(!S.scenes.length) return;
   renderAssets(); populateVoices();
   const tp=el("ttsPreview"); if(tp) tp.onclick=speakScript;
   el("audioUp").onchange=e=>{ const f=e.target.files[0]; if(f){ AUDIO={url:URL.createObjectURL(f),name:f.name}; S.narration.audioName=f.name; save(); el("audioName").textContent="🎵 "+f.name; } };
