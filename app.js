@@ -303,15 +303,18 @@ function useScript(i){
   const o=S.script.options[i]; if(!o)return;
   S.script.body=o.script; S.script.chosenStyle=o.style; save(); render();
 }
+function sourceContext(){
+  return (S.shortlist||[]).map(x=>`- "${x.title}"${x.channel?(" (by "+x.channel+")"):""}${x.notes?(" — creator notes: "+x.notes):""}`).join("\n");
+}
 async function generateScripts(){
   const status=el("genStatus"); const btn=el("genScripts");
   const topic=topicWord(); const age=S.script.age; const len=S.script.length;
   const facts=(S.story.facts||"").trim(); const outline=(S.story.outline||"").trim();
-  const tone=S.story.tone||"playful"; const learn=S.story.learn||"story";
+  const tone=S.story.tone||"playful"; const learn=S.story.learn||"story"; const videos=sourceContext();
   btn.disabled=true; status.textContent=S.aiKey?"Writing 3 scripts with AI…":"Building 3 options…";
   try{
     let opts;
-    if(S.aiKey) opts=await aiScripts({topic,age,len,facts,outline,tone,learn});
+    if(S.aiKey) opts=await aiScripts({topic,age,len,facts,outline,tone,learn,videos});
     else opts=templateScripts({topic,len,outline,facts});
     if(!opts?.length) throw new Error("no options returned");
     S.script.options=opts.slice(0,3); save(); status.textContent="Done ✓ pick one below.";
@@ -324,12 +327,14 @@ async function generateScripts(){
   const b=el("genScripts"); if(b)b.disabled=false;
 }
 const AI_MODELS=["gemini-2.0-flash-lite","gemini-1.5-flash","gemini-2.5-flash","gemini-2.0-flash","gemini-1.5-flash-8b"];
-async function aiScripts({topic,age,len,facts,outline,tone,learn}){
+async function aiScripts({topic,age,len,facts,outline,tone,learn,videos}){
   const words=WORD_TARGET[len]||300;
   const prompt=`You are a children's educational video scriptwriter. Write ORIGINAL narration scripts for kids aged ${age} about "${topic}".
-Use ONLY the researched facts below as source material. Do NOT copy any existing video's wording — everything must be original, simple, and age-appropriate.
-RESEARCHED FACTS:
-${facts||"(none provided — use widely-known, accurate, kid-safe facts about "+topic+")"}
+The creator selected the source videos below for this theme. Use them ONLY to understand the topic and angle — research the real facts and write something NEW. Do NOT copy any video's wording.
+SELECTED SOURCE VIDEOS (theme/style reference only):
+${videos||"(none selected — infer the theme from the topic)"}
+Use these researched facts as the factual backbone (add accurate, widely-known, kid-safe facts about ${topic} where helpful):
+${facts||"(none provided — use accurate, widely-known, kid-safe facts about "+topic+")"}
 STORY OUTLINE (follow loosely):
 ${outline||"(none — invent a clear kid-friendly arc: hook, what it is, where found, types, surprising fact, gentle careful fact, funny bit, recap)"}
 Tone: ${tone}. Learning style: ${learn}. Target length: about ${words} words each.
