@@ -369,10 +369,8 @@ let micRec = null, micChunks = [];
 
 const sceneDuration = sc => { const m=String(sc?.timing||"").match(/([\d.]+)/); return m?Math.max(1,+m[1]):5; };
 const dims = () => S.studio.res==="1080"?[1920,1080]:[1280,720];
-function sceneKeyword(i){
-  const sc=S.scenes[i]||{}; const base=sc.asset?.kw||sc.overlay||sc.image||sc.narration||S.search.q||"nature";
-  return base.split(/\s+/).slice(0,3).join(" ").replace(/[^\w\s]/g,"").trim()||"nature";
-}
+function topicWord(){ return ((S.search.q||S.story.facts||"nature").replace(/\b(for|to)\b.*/i,"").trim().split(/\s+/)[0]||"nature").replace(/[^\w]/g,"").toLowerCase(); }
+function sceneKeyword(i){ const sc=S.scenes[i]||{}; return sc.asset?.kw || topicWord(); }
 const slider=(label,path,min,max,val)=>`<div class="field"><label>${label} <b data-out="${path}">${val}</b></label><input type="range" min="${min}" max="${max}" value="${val}" data-model="${path}"></div>`;
 
 function stepStudio(){
