@@ -18,11 +18,12 @@ const KEY = "svb.state.v1";
 const blank = () => ({
   step: 0,
   ytKey: "",
+  aiKey: "",
   search: { q:"elephants for kids", age:"3-10", tone:"", style:"", lang:"", duration:"", pop:"", adv:{} },
   results: [],        // last search result cards
   shortlist: [],      // {id,title,thumb,use:{facts,narration,visuals,hook},scores:{},notes,timestamps}
   story: { facts:"", tone:"playful", learn:"story", outline:"" },
-  script: { length:"medium", age:"3-10", brief:"", body:"", dur:"" },
+  script: { length:"medium", age:"3-10", brief:"", body:"", dur:"", options:[], chosenStyle:"" },
   scenes: [],         // {narration,purpose,vtype,clip,replacement,image,overlay,timing,orig}
   production: { editBrief:"", cuts:"", subs:"", music:"", pacing:"", transitions:"", thumb:"", titles:"", desc:"", tags:"" },
   studio: { pixabayKey:"", color:{b:100,c:100,s:100,w:0}, kenburns:true, fps:30, res:"720", exported:false },
@@ -247,47 +248,121 @@ RECAP: 3 things we learned today.`;
   };
 }
 
-/* ---- 4 SCRIPT ---- */
+/* ---- 4 SCRIPT (AI-assisted, 3 options + confirm) ---- */
+const WORD_TARGET={short:150,medium:300,long:500};
 function step4(){
+  const opts=S.script.options||[];
   return group("Script Studio", `
     <div class="row">
       ${field("Length","script.length","select",["short","medium","long"])}
       ${field("Simplify for age","script.age","select",["3-6","3-10","6-12","8-14"])}
+      <div class="field"><label>&nbsp;</label><button class="btn ghost" id="aiKey">${S.aiKey?"Gemini AI key set ✓":"Add Gemini AI key (free)"}</button></div>
     </div>
-    ${field("Narration brief (voice, mood, pace)","script.brief","textarea","Warm, calm storyteller voice; slow pace; friendly.")}
-    <div class="row"><button class="btn primary" id="genScript">✨ Draft original script</button>
-      <span class="note" id="durOut"></span></div>
-    ${field("Script (intro / body / outro, with [pause] and *emphasis* markers)","script.body","textarea","")}
-    ${adv("Alternate hooks & TTS", `
-      <p class="note">Alternate opening hooks:</p>
-      <ul class="note"><li>Question hook</li><li>Surprise-fact hook</li><li>Mini-story hook</li></ul>
-      <div class="ph">TTS narration is a <b>placeholder</b> in MVP — export the script and use your own TTS/voiceover tool. Real TTS can be wired later.</div>`)}
+    <div class="row" style="margin:0 0 6px">
+      <button class="btn primary" id="genScripts">✨ Generate 3 script options</button>
+      <span class="note" id="genStatus"></span>
+    </div>
+    ${S.aiKey?"":`<div class="ph">No AI key yet — using built-in templates (uses your Story facts + outline). Add a free <b>Google Gemini</b> key for higher-quality, more varied writing.</div>`}
+    ${(S.story.facts||S.story.outline)?"":`<div class="ph">Tip: fill <b>clustered facts</b> and generate an <b>outline</b> in Story Build (step 3) first — the script is written from those.</div>`}
+    <div id="scriptOptions"></div>
+    <div class="glabel" style="margin-top:18px">Confirmed script <span class="note" id="durOut"></span></div>
+    ${field("","script.body","textarea","Pick an option above, or write/paste your own script here (intro / body / outro, with [pause] and *emphasis*).")}
+    ${adv("Narration note", `<div class="ph">TTS in the Studio step reads this script for preview. For audio in the exported file, upload or record a voice track. Keep the script fully original.</div>`)}
   `);
 }
 function w4(){
   updateDur();
-  el("genScript").onclick=()=>{
-    const topic=(S.search.q||"the topic").split(" ")[0];
-    const n=S.script.length==="short"?"short":S.script.length==="long"?"long":"medium";
-    S.script.body =
-`[INTRO]
-(warm) Hello little explorers! *${topic}*... are you ready? [pause]
-Today we discover something amazing about ${topic}!
-
-[BODY]
-${(S.story.outline||"").split("\n").filter(Boolean).map(l=>"— "+l.replace(/^[A-Z ]+:\s*/,"")).join("\n[pause]\n")}
-
-[OUTRO]
-(gentle) And that's the magic of ${topic}! [pause]
-Can *you* remember three things we learned? See you next time! 👋`;
-    setPath("script.body",S.script.body); save(); render();
-  };
+  el("aiKey").onclick=()=>{ const k=prompt("Free Google Gemini API key (aistudio.google.com/apikey). Stored locally only:",S.aiKey||""); if(k!=null){ S.aiKey=k.trim(); save(); render(); } };
+  el("genScripts").onclick=generateScripts;
+  const body=el("panel").querySelector('[data-model="script.body"]'); if(body) body.addEventListener("input",updateDur);
+  renderScriptOptions();
 }
 function updateDur(){
   const words=(S.script.body||"").trim().split(/\s+/).filter(Boolean).length;
   const sec=Math.round(words/2.3); // ~140 wpm kid narration
   S.script.dur=sec?`~${Math.floor(sec/60)}m ${sec%60}s (${words} words)`:"";
   const o=el("durOut"); if(o)o.textContent=S.script.dur;
+}
+function renderScriptOptions(){
+  const box=el("scriptOptions"); if(!box)return;
+  const opts=S.script.options||[];
+  if(!opts.length){ box.innerHTML=""; return; }
+  box.innerHTML=`<div class="glabel" style="margin-top:14px">Choose a script (${opts.length} options)</div>`+opts.map((o,i)=>{
+    const used=S.script.body && S.script.body===o.script;
+    return `<div class="item ${used?"":""}" style="${used?"border-color:var(--acc2)":""}">
+      <div class="ihead"><div class="it">${esc(o.style||("Option "+(i+1)))} ${used?'<span class="pill ok">✓ using</span>':''}</div>
+        <button class="btn ${used?"acc2":"primary"} sm" data-use="${i}">${used?"In use ✓":"✓ Use this script"}</button></div>
+      ${o.hook?`<div class="note" style="margin:6px 0"><b>Hook:</b> ${esc(o.hook)}</div>`:""}
+      <textarea readonly style="min-height:150px;font-size:13px">${esc(o.script||"")}</textarea>
+    </div>`;
+  }).join("");
+  box.querySelectorAll("[data-use]").forEach(b=>b.onclick=()=>useScript(+b.dataset.use));
+}
+function useScript(i){
+  const o=S.script.options[i]; if(!o)return;
+  S.script.body=o.script; S.script.chosenStyle=o.style; save(); render();
+}
+async function generateScripts(){
+  const status=el("genStatus"); const btn=el("genScripts");
+  const topic=topicWord(); const age=S.script.age; const len=S.script.length;
+  const facts=(S.story.facts||"").trim(); const outline=(S.story.outline||"").trim();
+  const tone=S.story.tone||"playful"; const learn=S.story.learn||"story";
+  btn.disabled=true; status.textContent=S.aiKey?"Writing 3 scripts with AI…":"Building 3 options…";
+  try{
+    let opts;
+    if(S.aiKey) opts=await aiScripts({topic,age,len,facts,outline,tone,learn});
+    else opts=templateScripts({topic,len,outline,facts});
+    if(!opts?.length) throw new Error("no options returned");
+    S.script.options=opts.slice(0,3); save(); status.textContent="Done ✓ pick one below.";
+    render();
+  }catch(e){
+    status.textContent="";
+    S.script.options=templateScripts({topic,len,outline,facts}); save(); render();
+    setTimeout(()=>{ const s=el("genStatus"); if(s)s.textContent=`AI failed (${e.message}) — showing template options.`; },30);
+  }
+  const b=el("genScripts"); if(b)b.disabled=false;
+}
+async function aiScripts({topic,age,len,facts,outline,tone,learn}){
+  const words=WORD_TARGET[len]||300;
+  const prompt=`You are a children's educational video scriptwriter. Write ORIGINAL narration scripts for kids aged ${age} about "${topic}".
+Use ONLY the researched facts below as source material. Do NOT copy any existing video's wording — everything must be original, simple, and age-appropriate.
+RESEARCHED FACTS:
+${facts||"(none provided — use widely-known, accurate, kid-safe facts about "+topic+")"}
+STORY OUTLINE (follow loosely):
+${outline||"(none — invent a clear kid-friendly arc: hook, what it is, where found, types, surprising fact, gentle careful fact, funny bit, recap)"}
+Tone: ${tone}. Learning style: ${learn}. Target length: about ${words} words each.
+Write 3 DISTINCT options, each in a different storytelling style (e.g. playful adventure, calm bedtime, curious question-and-answer).
+Each script needs: an intro hook, a body that teaches the facts as a story, and a warm outro. Use very simple words. Include [pause] markers and *emphasis* on key words.
+Return ONLY JSON: an array of 3 objects with keys "style", "hook", "script".`;
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(S.aiKey)}`;
+  const body={ contents:[{parts:[{text:prompt}]}], generationConfig:{ temperature:0.95, responseMimeType:"application/json",
+    responseSchema:{ type:"ARRAY", items:{ type:"OBJECT", properties:{ style:{type:"STRING"}, hook:{type:"STRING"}, script:{type:"STRING"} }, required:["style","hook","script"] } } } };
+  const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const j=await res.json();
+  if(j.error) throw new Error(j.error.message||"API error");
+  const txt=j.candidates?.[0]?.content?.parts?.[0]?.text; if(!txt) throw new Error("empty response");
+  return JSON.parse(txt);
+}
+function templateScripts({topic,len,outline,facts}){
+  const beats=(outline||"").split("\n").map(l=>l.replace(/^[A-Z ]+:\s*/,"").trim()).filter(Boolean);
+  const factLines=(facts||"").split("\n").map(l=>l.replace(/^[-*]\s*/,"").trim()).filter(Boolean);
+  const body=(beats.length?beats:factLines.length?factLines:[`${topic} are amazing`,`where ${topic} live`,`a surprising fact about ${topic}`,`what we learned`]);
+  const T=topic.charAt(0).toUpperCase()+topic.slice(1);
+  const mk=(style,intro,join,outro)=>({style,hook:intro.split("\n")[1]||intro,script:`[INTRO]\n${intro}\n\n[BODY]\n${body.map(b=>join(b)).join("\n[pause]\n")}\n\n[OUTRO]\n${outro}`});
+  return [
+    mk("Playful Adventure",
+      `(excited) Hello little explorers! [pause]\nGet ready for an *amazing* adventure with ${topic}!`,
+      b=>`Wow — ${b}!`,
+      `(cheerful) What an adventure! [pause] Can *you* remember our favourite part about ${topic}? See you next time! 👋`),
+    mk("Calm Bedtime",
+      `(soft, gentle) Shhh… snuggle in. [pause]\nTonight, a quiet story about ${topic}.`,
+      b=>`Softly now… ${b}.`,
+      `(whisper) And so, our gentle ${topic} story ends. [pause] Sweet dreams, little one. 🌙`),
+    mk("Curious Q&A",
+      `(curious) Have you ever wondered about ${topic}? [pause]\nLet's find out together!`,
+      b=>`Question: did you know… ${b}? *Yes!*`,
+      `(warm) So many wonderful answers about ${topic}! [pause] What will *you* ask next time? 👋`),
+  ];
 }
 
 /* ---- 5 SCENE BUILDER ---- */
