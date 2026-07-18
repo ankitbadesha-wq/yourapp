@@ -19,6 +19,7 @@ const blank = () => ({
   step: 0,
   ytKey: "",
   aiKey: "",
+  aiModel: "",
   search: { q:"elephants for kids", age:"3-10", tone:"", style:"", lang:"", duration:"", pop:"", adv:{} },
   results: [],        // last search result cards
   shortlist: [],      // {id,title,thumb,use:{facts,narration,visuals,hook},scores:{},notes,timestamps}
@@ -322,6 +323,7 @@ async function generateScripts(){
   }
   const b=el("genScripts"); if(b)b.disabled=false;
 }
+const AI_MODELS=["gemini-2.0-flash-lite","gemini-1.5-flash","gemini-2.5-flash","gemini-2.0-flash","gemini-1.5-flash-8b"];
 async function aiScripts({topic,age,len,facts,outline,tone,learn}){
   const words=WORD_TARGET[len]||300;
   const prompt=`You are a children's educational video scriptwriter. Write ORIGINAL narration scripts for kids aged ${age} about "${topic}".
@@ -334,14 +336,27 @@ Tone: ${tone}. Learning style: ${learn}. Target length: about ${words} words eac
 Write 3 DISTINCT options, each in a different storytelling style (e.g. playful adventure, calm bedtime, curious question-and-answer).
 Each script needs: an intro hook, a body that teaches the facts as a story, and a warm outro. Use very simple words. Include [pause] markers and *emphasis* on key words.
 Return ONLY JSON: an array of 3 objects with keys "style", "hook", "script".`;
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(S.aiKey)}`;
   const body={ contents:[{parts:[{text:prompt}]}], generationConfig:{ temperature:0.95, responseMimeType:"application/json",
     responseSchema:{ type:"ARRAY", items:{ type:"OBJECT", properties:{ style:{type:"STRING"}, hook:{type:"STRING"}, script:{type:"STRING"} }, required:["style","hook","script"] } } } };
-  const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const j=await res.json();
-  if(j.error) throw new Error(j.error.message||"API error");
-  const txt=j.candidates?.[0]?.content?.parts?.[0]?.text; if(!txt) throw new Error("empty response");
-  return JSON.parse(txt);
+  const models=S.aiModel?[S.aiModel,...AI_MODELS.filter(m=>m!==S.aiModel)]:AI_MODELS;
+  let lastErr;
+  for(const model of models){
+    try{
+      const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(S.aiKey)}`;
+      const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const j=await res.json();
+      if(j.error) throw new Error(j.error.message||"API error");
+      const txt=j.candidates?.[0]?.content?.parts?.[0]?.text; if(!txt) throw new Error("empty response");
+      const parsed=JSON.parse(txt);
+      S.aiModel=model; save();               // remember the model that worked
+      return parsed;
+    }catch(e){
+      lastErr=e;
+      // only fall through to the next model on quota / availability errors
+      if(!/quota|limit|not found|404|unavailable|permission|overloaded|503|429/i.test(e.message)) throw e;
+    }
+  }
+  throw lastErr||new Error("all models failed");
 }
 function templateScripts({topic,len,outline,facts}){
   const beats=(outline||"").split("\n").map(l=>l.replace(/^[A-Z ]+:\s*/,"").trim()).filter(Boolean);
