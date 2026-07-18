@@ -8,6 +8,7 @@ const STEPS = [
   ["Script","Script Studio"],
   ["Scenes","Scene Builder"],
   ["Production","Production Tools"],
+  ["Studio","Video Studio"],
   ["Publish","Publish Center"],
   ["Tracker","Video Tracker"],
 ];
@@ -24,6 +25,8 @@ const blank = () => ({
   script: { length:"medium", age:"3-10", brief:"", body:"", dur:"" },
   scenes: [],         // {narration,purpose,vtype,clip,replacement,image,overlay,timing,orig}
   production: { editBrief:"", cuts:"", subs:"", music:"", pacing:"", transitions:"", thumb:"", titles:"", desc:"", tags:"" },
+  studio: { pixabayKey:"", color:{b:100,c:100,s:100,w:0}, kenburns:true, fps:30, res:"720", exported:false },
+  narration: { tts:true, voice:"", audioName:"" },
   publish: { checks:{}, meta:"" },
   tracker: { title:"", date:"", views:"", ctr:"", avd:"", comments:"", worked:"", improve:"" },
 });
@@ -79,8 +82,8 @@ const field = (label,path,type="text",opts)=>{
 };
 
 /* =================== STEP VIEWS =================== */
-const views = [step1,step2,step3,step4,step5,step6,step7,step8];
-const wire  = [w1,null,w3,w4,w5,null,w7,null];
+const views = [step1,step2,step3,step4,step5,step6,stepStudio,step7,step8];
+const wire  = [w1,null,w3,w4,w5,null,wStudio,w7,null];
 
 /* ---- 1 SEARCH ---- */
 function step1(){
@@ -358,7 +361,236 @@ function step6(){
 }
 function w6(){}
 
-/* ---- 7 PUBLISH ---- */
+/* ---- 7 STUDIO (video editor + export) ---- */
+const MEDIA = {};          // sceneIdx -> {el, type, ready}
+let AUDIO = null;          // {url, name} narration track (in-memory, not persisted)
+let PREVIEW_RAF = null, RECORDING = false, previewAudio = null;
+let micRec = null, micChunks = [];
+
+const sceneDuration = sc => { const m=String(sc?.timing||"").match(/([\d.]+)/); return m?Math.max(1,+m[1]):5; };
+const dims = () => S.studio.res==="1080"?[1920,1080]:[1280,720];
+function sceneKeyword(i){
+  const sc=S.scenes[i]||{}; const base=sc.asset?.kw||sc.overlay||sc.image||sc.narration||S.search.q||"nature";
+  return base.split(/\s+/).slice(0,3).join(" ").replace(/[^\w\s]/g,"").trim()||"nature";
+}
+const slider=(label,path,min,max,val)=>`<div class="field"><label>${label} <b data-out="${path}">${val}</b></label><input type="range" min="${min}" max="${max}" value="${val}" data-model="${path}"></div>`;
+
+function stepStudio(){
+  if(!S.scenes.length) return group("Video Studio",`<div class="empty">No scenes yet. Go to <b>Scene Builder</b> (step 5) and build scenes first.</div>`);
+  const c=S.studio.color;
+  return group("Video Studio", `
+    <div class="ph" style="border-color:var(--acc2);color:var(--acc2);background:rgba(0,208,163,.08)">
+      ✅ Use only footage you're allowed to: your own uploads or free Pixabay clips/photos. Source YouTube videos stay research-only.</div>
+    <div class="row"><button class="btn ghost sm" id="pixKey">${S.studio.pixabayKey?"Pixabay key set ✓":"Add Pixabay key (free footage)"}</button></div>
+
+    <div class="glabel" style="margin-top:6px">Scene assets</div>
+    <div id="assets"></div>
+
+    <div class="glabel" style="margin-top:16px">Look &amp; grade</div>
+    <div class="row">
+      ${slider("Brightness","studio.color.b",50,150,c.b)}
+      ${slider("Contrast","studio.color.c",50,150,c.c)}
+      ${slider("Saturation","studio.color.s",0,200,c.s)}
+      ${slider("Warmth","studio.color.w",0,80,c.w)}
+    </div>
+    <div class="row">
+      <label class="pill" style="cursor:pointer"><input type="checkbox" data-model="studio.kenburns" style="width:auto;margin-right:6px">Pan/zoom (Ken Burns)</label>
+      ${field("FPS","studio.fps","select",["24","30"])}
+      ${field("Resolution","studio.res","select",["720","1080"])}
+    </div>
+
+    <div class="glabel" style="margin-top:16px">Narration</div>
+    <div class="row">
+      <label class="pill" style="cursor:pointer"><input type="checkbox" data-model="narration.tts" style="width:auto;margin-right:6px">Read script with TTS (preview)</label>
+      <select data-model="narration.voice" id="voiceSel" style="max-width:240px"></select>
+      <button class="btn sm" id="ttsPreview">🔊 Test voice</button>
+    </div>
+    <div class="row">
+      <label class="btn sm" style="cursor:pointer">⬆ Upload voice track<input type="file" accept="audio/*" id="audioUp" hidden></label>
+      <button class="btn sm" id="micRec">● Record narration</button>
+      <span class="note" id="audioName">${S.narration.audioName?("🎵 "+esc(S.narration.audioName)):"no audio track"}</span>
+    </div>
+    <div class="note">TTS plays in the live preview. For sound in the <b>downloaded file</b>, upload or record a voice track (browser TTS can't be embedded).</div>
+
+    <div class="glabel" style="margin-top:16px">Preview &amp; export</div>
+    <canvas id="stCanvas" width="640" height="360" style="width:100%;max-width:640px;border-radius:12px;background:#0d0f1a;display:block"></canvas>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="playBtn">▶ Preview</button>
+      <button class="btn primary" id="exportBtn">🎬 Render &amp; download .webm</button>
+    </div>
+    <div class="ph" style="border-color:var(--warn)">Rendering runs in real time (a 60s video takes ~60s) and records the preview. Keep this tab visible while it renders.</div>
+    <div class="note" id="exStatus"></div>
+  `);
+}
+function wStudio(){
+  el("pixKey").onclick=()=>{ const k=prompt("Free Pixabay API key (pixabay.com → sign up → https://pixabay.com/api/docs shows your key). Stored locally only:",S.studio.pixabayKey||""); if(k!=null){ S.studio.pixabayKey=k.trim(); save(); render(); } };
+  renderAssets();
+  populateVoices();
+  el("ttsPreview").onclick=speakScript;
+  el("audioUp").onchange=e=>{ const f=e.target.files[0]; if(f){ AUDIO={url:URL.createObjectURL(f),name:f.name}; S.narration.audioName=f.name; save(); el("audioName").textContent="🎵 "+f.name; } };
+  el("micRec").onclick=e=>toggleRecord(e.target);
+  el("playBtn").onclick=e=>previewPlay(e.target);
+  el("exportBtn").onclick=e=>exportVideo(e.target);
+  el("panel").querySelectorAll('input[type=range],select[data-model^="studio."],input[data-model="studio.kenburns"]').forEach(inp=>inp.addEventListener("input",()=>{ updateOuts(); drawStaticPreview(); }));
+  ensureMedia().then(drawStaticPreview);
+}
+function updateOuts(){ el("panel")?.querySelectorAll("[data-out]").forEach(b=>{ const v=getPath(b.dataset.out); if(v!=null)b.textContent=v; }); }
+
+/* --- assets --- */
+function renderAssets(){
+  const box=el("assets"); if(!box)return;
+  box.innerHTML=S.scenes.map((sc,i)=>{
+    const a=sc.asset||{}; const ready=MEDIA[i]?.ready;
+    const thumb=a.thumb||(a.type==="image"?a.url:"");
+    return `<div class="assetrow">
+      <div class="athumb">${thumb?`<img src="${thumb}" alt="">`:"▶"}</div>
+      <div class="ainfo">
+        <b>Scene ${i+1}</b> <span class="note">${sceneDuration(sc)}s · ${esc((sc.overlay||sc.narration||"").slice(0,70))}</span>
+        <div class="row" style="margin:8px 0 0">
+          <input data-kw="${i}" placeholder="search keyword" value="${esc(a.kw||sceneKeyword(i))}" style="max-width:200px">
+          <button class="btn sm" data-find="${i}">🔍 Free footage</button>
+          <label class="btn sm" style="cursor:pointer">⬆ Upload<input type="file" accept="image/*,video/*" data-up="${i}" hidden></label>
+          ${(a.url||ready)?`<span class="pill ok">${esc(a.source||"asset")} ✓</span>`:""}
+        </div>
+        <div class="picks" id="picks-${i}"></div>
+      </div></div>`;
+  }).join("");
+  box.querySelectorAll("[data-find]").forEach(b=>b.onclick=()=>stockSearch(+b.dataset.find));
+  box.querySelectorAll("[data-up]").forEach(inp=>inp.onchange=e=>{ const f=e.target.files[0]; if(f)uploadFile(+inp.dataset.up,f); });
+  box.querySelectorAll("[data-kw]").forEach(inp=>inp.oninput=()=>{ setPath(`scenes.${inp.dataset.kw}.asset.kw`,inp.value); save(); });
+}
+async function stockSearch(i){
+  const box=el("picks-"+i); const key=S.studio.pixabayKey.trim();
+  const kw=(document.querySelector(`[data-kw="${i}"]`)?.value||sceneKeyword(i)).trim();
+  setPath(`scenes.${i}.asset.kw`,kw); save();
+  if(!key){ box.innerHTML=`<div class="ph">Add a free Pixabay key (button up top) to auto-find footage, or use <b>Upload</b>.</div>`; return; }
+  box.innerHTML="Searching…";
+  try{
+    const u=`https://pixabay.com/api/?key=${encodeURIComponent(key)}&q=${encodeURIComponent(kw)}&image_type=photo&safesearch=true&per_page=12`;
+    const j=await (await fetch(u)).json();
+    if(j.error) throw new Error(j.error);
+    if(!j.hits?.length){ box.innerHTML=`<div class="note">No results — try another keyword.</div>`; return; }
+    box.innerHTML=j.hits.map(h=>`<img class="pick" src="${h.previewURL}" data-full="${h.webformatURL}" data-thumb="${h.previewURL}" title="${esc(h.tags||"")}" alt="">`).join("");
+    box.querySelectorAll(".pick").forEach(im=>im.onclick=()=>pickAsset(i,im.dataset.full,im.dataset.thumb,"image","pixabay"));
+  }catch(e){ box.innerHTML=`<div class="ph">Footage search failed: ${esc(e.message)}. Use <b>Upload</b> instead.</div>`; }
+}
+async function pickAsset(i,url,thumb,type,source){
+  const kw=S.scenes[i].asset?.kw||"";
+  setPath(`scenes.${i}.asset`,{url,thumb,type,source,kw}); save();
+  await loadMedia(i,url,type); renderAssets(); drawStaticPreview();
+}
+function uploadFile(i,file){
+  const url=URL.createObjectURL(file); const type=file.type.startsWith("video")?"video":"image";
+  const kw=S.scenes[i].asset?.kw||"";
+  setPath(`scenes.${i}.asset`,{url:"",thumb:type==="image"?url:"",type,source:"upload",kw,name:file.name}); save();
+  loadMedia(i,url,type).then(()=>{ renderAssets(); drawStaticPreview(); });
+}
+async function loadMedia(i,url,type){
+  let src=url;
+  if(/^https?:/.test(url)){ try{ const b=await (await fetch(url,{mode:"cors"})).blob(); src=URL.createObjectURL(b); }catch(e){} }
+  return new Promise(res=>{
+    if(type==="video"){
+      const v=document.createElement("video"); v.muted=true; v.loop=true; v.playsInline=true;
+      v.onloadeddata=()=>{ MEDIA[i]={el:v,type,ready:true}; v.play().catch(()=>{}); res(); };
+      v.onerror=()=>{ MEDIA[i]={el:v,type,ready:false}; res(); }; v.src=src;
+    } else {
+      const im=new Image();
+      im.onload=()=>{ MEDIA[i]={el:im,type,ready:true}; res(); };
+      im.onerror=()=>{ MEDIA[i]={el:im,type,ready:false}; res(); }; im.src=src;
+    }
+  });
+}
+async function ensureMedia(){
+  for(let i=0;i<S.scenes.length;i++){ const a=S.scenes[i].asset; if(a?.url && !MEDIA[i]?.ready) await loadMedia(i,a.url,a.type||"image"); }
+}
+
+/* --- narration --- */
+function populateVoices(){
+  const sel=el("voiceSel"); if(!sel)return;
+  const fill=()=>{ const vs=speechSynthesis.getVoices().filter(v=>/en/i.test(v.lang)); sel.innerHTML=vs.map(v=>`<option value="${esc(v.name)}">${esc(v.name)} (${v.lang})</option>`).join("")||`<option>default</option>`; if(S.narration.voice)sel.value=S.narration.voice; };
+  fill(); speechSynthesis.onvoiceschanged=fill;
+}
+function utter(text){ const u=new SpeechSynthesisUtterance((text||"").replace(/\[[^\]]*\]/g," ").replace(/[*_]/g,"")); const v=speechSynthesis.getVoices().find(v=>v.name===S.narration.voice); if(v)u.voice=v; u.rate=0.95; u.pitch=1.05; return u; }
+function speakScript(){ try{ speechSynthesis.cancel(); speechSynthesis.speak(utter(S.script.body)); }catch(e){} }
+function speakScene(i){ try{ speechSynthesis.cancel(); speechSynthesis.speak(utter(S.scenes[i].narration)); }catch(e){} }
+async function toggleRecord(btn){
+  if(micRec&&micRec.state==="recording"){ micRec.stop(); return; }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    micRec=new MediaRecorder(stream); micChunks=[];
+    micRec.ondataavailable=e=>{ if(e.data.size)micChunks.push(e.data); };
+    micRec.onstop=()=>{ const b=new Blob(micChunks,{type:"audio/webm"}); AUDIO={url:URL.createObjectURL(b),name:"mic-recording.webm"}; S.narration.audioName=AUDIO.name; save(); stream.getTracks().forEach(t=>t.stop()); el("audioName").textContent="🎵 "+AUDIO.name; btn.textContent="● Record narration"; };
+    micRec.start(); btn.textContent="■ Stop recording";
+  }catch(e){ alert("Mic access failed: "+e.message); }
+}
+
+/* --- draw / preview --- */
+function coverDraw(ctx,media,W,H,zoom){
+  const iw=media.videoWidth||media.naturalWidth||media.width, ih=media.videoHeight||media.naturalHeight||media.height;
+  if(!iw||!ih) return false;
+  const scale=Math.max(W/iw,H/ih)*zoom, dw=iw*scale, dh=ih*scale;
+  ctx.drawImage(media,(W-dw)/2,(H-dh)/2,dw,dh); return true;
+}
+function wrapText(ctx,text,maxW){
+  const words=(text||"").split(/\s+/); const lines=[]; let line="";
+  for(const w of words){ const t=line?line+" "+w:w; if(ctx.measureText(t).width>maxW&&line){ lines.push(line); line=w; } else line=t; }
+  if(line)lines.push(line); return lines.slice(0,3);
+}
+function drawScene(ctx,W,H,idx,p){
+  ctx.filter="none"; ctx.fillStyle="#0d0f1a"; ctx.fillRect(0,0,W,H);
+  const c=S.studio.color, m=MEDIA[idx], zoom=S.studio.kenburns?1+0.08*p:1;
+  let drew=false;
+  if(m&&m.ready){ ctx.filter=`brightness(${c.b}%) contrast(${c.c}%) saturate(${c.s}%) sepia(${c.w}%)`; drew=coverDraw(ctx,m.el,W,H,zoom); ctx.filter="none"; }
+  if(!drew){ ctx.fillStyle="#1b2140"; ctx.fillRect(0,0,W,H); ctx.fillStyle="#6c7bff"; ctx.textAlign="center"; ctx.font=`bold ${H*0.09}px system-ui`; ctx.fillText("Scene "+(idx+1),W/2,H*0.46); ctx.fillStyle="#9aa0bf"; ctx.font=`${H*0.035}px system-ui`; ctx.fillText("add an image or clip",W/2,H*0.56); }
+  const ov=S.scenes[idx]?.overlay||S.scenes[idx]?.narration||"";
+  if(ov){
+    ctx.font=`600 ${H*0.05}px system-ui`; ctx.textAlign="center";
+    const lines=wrapText(ctx,ov,W*0.86), lh=H*0.066, bh=lines.length*lh+H*0.04, by=H-bh;
+    const g=ctx.createLinearGradient(0,by-H*0.06,0,H); g.addColorStop(0,"rgba(0,0,0,0)"); g.addColorStop(1,"rgba(0,0,0,.72)");
+    ctx.fillStyle=g; ctx.fillRect(0,by-H*0.06,W,bh+H*0.06);
+    ctx.fillStyle="#fff"; lines.forEach((l,k)=>ctx.fillText(l,W/2,by+H*0.03+lh*(k+0.7)));
+  }
+}
+function drawStaticPreview(){ const cv=el("stCanvas"); if(!cv)return; drawScene(cv.getContext("2d"),cv.width,cv.height,0,0); }
+async function previewPlay(btn){
+  if(PREVIEW_RAF){ previewStop(btn); return; }
+  await ensureMedia();
+  const cv=el("stCanvas"), ctx=cv.getContext("2d"), W=cv.width, H=cv.height;
+  const durs=S.scenes.map(sceneDuration), total=durs.reduce((a,b)=>a+b,0), start=performance.now(); let last=-1;
+  btn.textContent="■ Stop";
+  if(AUDIO?.url){ previewAudio=new Audio(AUDIO.url); previewAudio.play().catch(()=>{}); }
+  (function frame(now){
+    const t=(now-start)/1000; if(t>=total){ previewStop(btn); return; }
+    let acc=0,idx=0,p=0; for(let i=0;i<durs.length;i++){ if(t<acc+durs[i]){ idx=i; p=(t-acc)/durs[i]; break; } acc+=durs[i]; }
+    if(idx!==last){ last=idx; if(S.narration.tts&&!AUDIO) speakScene(idx); }
+    drawScene(ctx,W,H,idx,p); PREVIEW_RAF=requestAnimationFrame(frame);
+  })(performance.now());
+}
+function previewStop(btn){ if(PREVIEW_RAF)cancelAnimationFrame(PREVIEW_RAF); PREVIEW_RAF=null; try{speechSynthesis.cancel();}catch(e){} if(previewAudio){previewAudio.pause();previewAudio=null;} if(btn)btn.textContent="▶ Preview"; drawStaticPreview(); }
+
+/* --- export --- */
+async function exportVideo(btn){
+  if(RECORDING)return; const status=el("exStatus");
+  if(!S.scenes.length){ status.textContent="Build scenes first."; return; }
+  RECORDING=true; btn.disabled=true; status.textContent="Preparing… loading assets";
+  await ensureMedia();
+  const [W,H]=dims(); const cv=document.createElement("canvas"); cv.width=W; cv.height=H; const ctx=cv.getContext("2d");
+  const fps=+S.studio.fps||30; const stream=cv.captureStream(fps);
+  let audioEl,actx;
+  if(AUDIO?.url){ try{ audioEl=new Audio(); audioEl.src=AUDIO.url; actx=new (window.AudioContext||window.webkitAudioContext)(); const s=actx.createMediaElementSource(audioEl); const d=actx.createMediaStreamDestination(); s.connect(d); d.stream.getAudioTracks().forEach(t=>stream.addTrack(t)); }catch(e){} }
+  const mimes=["video/webm;codecs=vp9,opus","video/webm;codecs=vp8,opus","video/webm"]; const mime=mimes.find(m=>MediaRecorder.isTypeSupported(m))||"video/webm";
+  const rec=new MediaRecorder(stream,{mimeType:mime}); const chunks=[];
+  rec.ondataavailable=e=>{ if(e.data.size)chunks.push(e.data); };
+  const durs=S.scenes.map(sceneDuration), total=durs.reduce((a,b)=>a+b,0);
+  rec.onstop=()=>{ const blob=new Blob(chunks,{type:mime}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="story-video.webm"; a.click(); URL.revokeObjectURL(a.href); RECORDING=false; btn.disabled=false; S.studio.exported=true; save(); status.textContent=`Done ✓ story-video.webm — ${(blob.size/1048576).toFixed(1)} MB, ${total.toFixed(0)}s`+(AUDIO?"":" (no audio — add a voice track for sound)"); };
+  rec.start(100);
+  if(audioEl){ try{ await actx.resume(); audioEl.play(); }catch(e){} }
+  const start=performance.now();
+  await new Promise(done=>{ (function frame(now){ const t=(now-start)/1000; if(t>=total){ done(); return; } let acc=0,idx=0,p=0; for(let i=0;i<durs.length;i++){ if(t<acc+durs[i]){ idx=i; p=(t-acc)/durs[i]; break; } acc+=durs[i]; } drawScene(ctx,W,H,idx,p); status.textContent=`Rendering… ${Math.round(t/total*100)}%`; requestAnimationFrame(frame); })(performance.now()); });
+  rec.stop(); if(audioEl)audioEl.pause();
+}
+
+/* ---- 8 PUBLISH ---- */
 const CHECKS=[
   ["orig","Originality: script & narration are original (not copied)"],
   ["src","Source usage reviewed — references only, no reupload"],
@@ -370,6 +602,7 @@ const CHECKS=[
 function step7(){
   const o=originalityScore();
   return group("Publish Center", `
+    <div class="ph" style="${S.studio.exported?"border-color:var(--ok);color:var(--ok);background:rgba(40,199,111,.08)":""}">${S.studio.exported?"🎬 Video rendered in Studio — <b>story-video.webm</b> is on your hard drive, ready to upload.":"⚠ No video rendered yet. Go to <b>Studio</b> (step 7) to build and download your .webm."}</div>
     <h4 style="margin:0 0 4px">Originality check</h4>
     <div class="meter"><span style="width:${o.pct}%"></span></div>
     <p class="note">${o.pct}% — ${o.msg}</p>
@@ -390,7 +623,8 @@ function w7(){
   el("prepUpload").onclick=()=>download("upload-prep.json",{
     title:(S.production.titles||"").split("\n")[0]||S.tracker.title||"Untitled",
     description:S.production.desc, tags:(S.production.tags||"").split(",").map(t=>t.trim()).filter(Boolean),
-    madeForKids:true, script:S.script.body, scenes:S.scenes, originality:originalityScore()
+    madeForKids:true, script:S.script.body, scenes:S.scenes, originality:originalityScore(),
+    videoFile: S.studio.exported?"story-video.webm (rendered in Studio)":"not rendered yet"
   });
 }
 function originalityScore(){
@@ -447,6 +681,7 @@ const HELP=[
   `<h4>Script</h4><ul><li>Original wording only.</li><li>Use [pause] & *emphasis*.</li><li>Watch the duration estimate.</li></ul>`,
   `<h4>Scenes</h4><ul><li>Prefer replacement visuals.</li><li>Flag anything too close to a source.</li></ul>`,
   `<h4>Production</h4><ul><li>Write a clear edit brief.</li><li>Export the package for your editor.</li></ul>`,
+  `<h4>Studio</h4><ul><li>Add a license-free image/clip per scene.</li><li>Only use footage you're allowed to (uploads or Pixabay).</li><li>Grade colors, then render to .webm.</li></ul>`,
   `<h4>Publish</h4><ul><li>Pass originality check first.</li><li>Set "Made for kids".</li><li>Official OAuth upload only.</li></ul>`,
   `<h4>Tracker</h4><ul><li>Log CTR & retention.</li><li>Feed learnings into next video.</li></ul>`,
 ];
